@@ -1,6 +1,6 @@
 use std::{
     iter::{once, repeat, repeat_with},
-    sync::Arc,
+    sync::{Arc, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -16,10 +16,12 @@ fn main() {
     } = Args::parse();
 
     thread::scope(|s| {
-        let crystal = once(impurities.get())
-            .chain(repeat(0))
-            .take(cells.get())
-            .collect::<Arc<[_]>>();
+        let crystal = Arc::new(RwLock::new(
+            once(impurities.get())
+                .chain(repeat(0))
+                .take(cells.get())
+                .collect::<Vec<_>>(),
+        ));
         let (notify_senders, notify_receivers): (Vec<_>, Vec<_>) =
             repeat_with(|| crossbeam::channel::bounded::<()>(0))
                 .take(impurities.get())
@@ -57,10 +59,10 @@ fn main() {
 
                     let next = dir.next(i, cells).unwrap();
 
-                    unsafe {
-                        let ptr = crystal.as_ptr() as *mut usize;
-                        *ptr.add(i) -= 1;
-                        *ptr.add(next) += 1;
+                    {
+                        let mut crystal = crystal.write().unwrap();
+                        crystal[i] -= 1;
+                        crystal[next] += 1;
                     }
 
                     i = next;
@@ -70,7 +72,8 @@ fn main() {
     });
 }
 
-fn print_step(crystal: &[usize], start: Instant) {
+fn print_step(crystal: &RwLock<Vec<usize>>, start: Instant) {
+    let crystal = crystal.read().unwrap();
     println!(
         "[{}]\t{:?}: {}",
         start.elapsed().as_secs(),

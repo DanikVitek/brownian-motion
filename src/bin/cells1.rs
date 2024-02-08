@@ -31,40 +31,16 @@ fn main() {
             let crystal = crystal.clone();
             move || {
                 let start = Instant::now();
-                println!(
-                    "[{}]\t{:?}: {}",
-                    start.elapsed().as_secs(),
-                    crystal,
-                    crystal
-                        .iter()
-                        .map(|c| c.load(atomic::Ordering::Acquire))
-                        .sum::<usize>()
-                );
+                print_step(&crystal, start);
                 let mut discrete_step_start = start;
                 while start.elapsed() < Duration::from_secs(60) {
                     notify_senders.iter().for_each(|s| s.send(()).unwrap());
                     if discrete_step_start.elapsed() > Duration::from_secs(5) {
-                        println!(
-                            "[{}]\t{:?}: {}",
-                            start.elapsed().as_secs(),
-                            crystal,
-                            crystal
-                                .iter()
-                                .map(|c| c.load(atomic::Ordering::Acquire))
-                                .sum::<usize>()
-                        );
+                        print_step(&crystal, start);
                         discrete_step_start = Instant::now();
                     }
                 }
-                println!(
-                    "[{}]\t{:?}: {}",
-                    start.elapsed().as_secs(),
-                    crystal,
-                    crystal
-                        .iter()
-                        .map(|c| c.load(atomic::Ordering::Acquire))
-                        .sum::<usize>()
-                );
+                print_step(&crystal, start);
             }
         });
         for notifications in notify_receivers {
@@ -92,4 +68,16 @@ fn main() {
             });
         }
     });
+}
+
+fn print_step(crystal: &[AtomicUsize], start: Instant) {
+    println!(
+        "[{}]\t{:?}: {}",
+        start.elapsed().as_secs(),
+        crystal,
+        crystal
+            .iter()
+            .map(|c| c.load(atomic::Ordering::Acquire))
+            .sum::<usize>()
+    );
 }
