@@ -1,7 +1,7 @@
 use std::{
     iter::{once, repeat_with},
     sync::{
-        atomic::{self, AtomicUsize},
+        atomic::{self, AtomicU64, AtomicUsize},
         Arc,
     },
     thread,
@@ -27,24 +27,39 @@ fn main() {
             repeat_with(|| crossbeam::channel::bounded::<()>(0))
                 .take(impurities.get())
                 .unzip();
+        let total_transitions = Arc::new(AtomicU64::new(0));
         s.spawn({
             let crystal = crystal.clone();
+            let total_transitions = total_transitions.clone();
             move || {
                 let start = Instant::now();
-                print_step(&crystal, start);
+                print_step(
+                    &crystal,
+                    start,
+                    total_transitions.load(atomic::Ordering::Relaxed),
+                );
                 let mut discrete_step_start = start;
                 while start.elapsed() < Duration::from_secs(60) {
                     notify_senders.iter().for_each(|s| s.send(()).unwrap());
                     if discrete_step_start.elapsed() > Duration::from_secs(5) {
-                        print_step(&crystal, start);
+                        print_step(
+                            &crystal,
+                            start,
+                            total_transitions.load(atomic::Ordering::Relaxed),
+                        );
                         discrete_step_start = Instant::now();
                     }
                 }
-                print_step(&crystal, start);
+                print_step(
+                    &crystal,
+                    start,
+                    total_transitions.load(atomic::Ordering::Relaxed),
+                );
             }
         });
         for notifications in notify_receivers {
             let crystal = crystal.clone();
+            let total_transitions = total_transitions.clone();
             s.spawn(move || {
                 let mut rng = rand::thread_rng();
                 let mut i: usize = 0;
@@ -62,6 +77,7 @@ fn main() {
 
                     crystal[i].fetch_sub(1, atomic::Ordering::SeqCst);
                     crystal[next].fetch_add(1, atomic::Ordering::SeqCst);
+                    total_transitions.fetch_add(1, atomic::Ordering::SeqCst);
 
                     i = next;
                 }
@@ -70,14 +86,15 @@ fn main() {
     });
 }
 
-fn print_step(crystal: &[AtomicUsize], start: Instant) {
+fn print_step(crystal: &[AtomicUsize], start: Instant, total_transitions: u64) {
     println!(
-        "[{}]\t{:?}: {}",
+        "[{}]\t{:?}. Particles: {}, Transitions: {}",
         start.elapsed().as_secs(),
         crystal,
         crystal
             .iter()
             .map(|c| c.load(atomic::Ordering::Acquire))
-            .sum::<usize>()
+            .sum::<usize>(),
+        total_transitions,
     );
 }

@@ -1,6 +1,9 @@
 use std::{
     iter::{once, repeat, repeat_with},
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{self, AtomicU64},
+        Arc, RwLock,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -20,30 +23,47 @@ fn main() {
             once(impurities.get())
                 .chain(repeat(0))
                 .take(cells.get())
-                .collect::<Vec<_>>(),
+                .collect::<Box<[_]>>(),
         ));
         let (notify_senders, notify_receivers): (Vec<_>, Vec<_>) =
             repeat_with(|| crossbeam::channel::bounded::<()>(0))
                 .take(impurities.get())
                 .unzip();
+        let total_transitions = Arc::new(AtomicU64::new(0));
         s.spawn({
             let crystal = crystal.clone();
+            let total_transitions = total_transitions.clone();
             move || {
                 let start = Instant::now();
-                print_step(&crystal, start);
+                {
+                    print_step(
+                        &crystal.read().unwrap(),
+                        start,
+                        total_transitions.load(atomic::Ordering::Relaxed),
+                    );
+                }
                 let mut discrete_step_start = start;
                 while start.elapsed() < Duration::from_secs(60) {
                     notify_senders.iter().for_each(|s| s.send(()).unwrap());
                     if discrete_step_start.elapsed() > Duration::from_secs(5) {
-                        print_step(&crystal, start);
+                        print_step(
+                            &crystal.read().unwrap(),
+                            start,
+                            total_transitions.load(atomic::Ordering::Relaxed),
+                        );
                         discrete_step_start = Instant::now();
                     }
                 }
-                print_step(&crystal, start);
+                print_step(
+                    &crystal.read().unwrap(),
+                    start,
+                    total_transitions.load(atomic::Ordering::Relaxed),
+                );
             }
         });
         for notifications in notify_receivers {
             let crystal = crystal.clone();
+            let total_transitions = total_transitions.clone();
             s.spawn(move || {
                 let mut rng = rand::thread_rng();
                 let mut i: usize = 0;
@@ -64,6 +84,7 @@ fn main() {
                         crystal[i] -= 1;
                         crystal[next] += 1;
                     }
+                    total_transitions.fetch_add(1, atomic::Ordering::SeqCst);
 
                     i = next;
                 }
@@ -72,12 +93,12 @@ fn main() {
     });
 }
 
-fn print_step(crystal: &RwLock<Vec<usize>>, start: Instant) {
-    let crystal = crystal.read().unwrap();
+fn print_step(crystal: &[usize], start: Instant, total_transitions: u64) {
     println!(
-        "[{}]\t{:?}: {}",
+        "[{}]\t{:?}. Particles: {}, Transitions: {}",
         start.elapsed().as_secs(),
         crystal,
-        crystal.iter().sum::<usize>()
+        crystal.iter().sum::<usize>(),
+        total_transitions,
     );
 }
