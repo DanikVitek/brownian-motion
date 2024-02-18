@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, ops::RangeInclusive};
+use std::{num::NonZeroUsize, ops::RangeInclusive, sync::mpsc, thread::{Scope, ScopedJoinHandle}};
 
 use clap::{CommandFactory, Parser};
 
@@ -13,7 +13,7 @@ pub struct Args {
     /// Number of impurities in the "crystal"
     #[arg(short = 'K', long, default_value_t = NonZeroUsize::new(3).unwrap())]
     pub impurities: NonZeroUsize,
-    /// Probability of a particle transitioning to the next cell at any given time step
+    /// Probability of a particle transitioning to the left cell instead of right cell at any given time step
     #[arg(short = 'p', long, default_value_t = 0.5)]
     pub transition_probability: f64,
 }
@@ -59,4 +59,28 @@ impl Direction {
             Self::Right => i.checked_add(1).filter(|&i| i < max.get()),
         }
     }
+}
+
+pub enum Event {
+    ParticleMoved,
+    AskForTotalTransitions,
+}
+
+pub fn spawn_scoped_event_handler<'scope>(
+    scope: &'scope Scope<'scope, '_>,
+    event_receiver: mpsc::Receiver<Event>,
+    total_transitions_sender: mpsc::Sender<u64>,
+) -> ScopedJoinHandle<'scope, u64> {
+    scope.spawn(move || {
+        let mut transitions: u64 = 0;
+        while let Ok(event) = event_receiver.recv() {
+            match event {
+                Event::ParticleMoved => transitions += 1,
+                Event::AskForTotalTransitions => {
+                    total_transitions_sender.send(transitions).unwrap();
+                }
+            }
+        }
+        transitions
+    })
 }
