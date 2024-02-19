@@ -84,12 +84,13 @@ impl Direction {
 pub enum Event {
     ParticleMoved,
     AskForTotalTransitions,
+    Quit,
 }
 
 pub fn spawn_scoped_event_handler<'scope>(
     scope: &'scope Scope<'scope, '_>,
     event_receiver: mpsc::Receiver<Event>,
-    total_transitions_sender: mpsc::Sender<u64>,
+    total_transitions_sender: mpsc::SyncSender<u64>,
 ) -> ScopedJoinHandle<'scope, u64> {
     scope.spawn(move || {
         let mut transitions: u64 = 0;
@@ -99,6 +100,7 @@ pub fn spawn_scoped_event_handler<'scope>(
                 Event::AskForTotalTransitions => {
                     total_transitions_sender.send(transitions).unwrap();
                 }
+                Event::Quit => break,
             }
         }
         transitions
@@ -107,7 +109,7 @@ pub fn spawn_scoped_event_handler<'scope>(
 
 #[macro_export]
 macro_rules! reclone {
-    ($v:ident) => {
-        let $v = $v.clone();
+    ($($v:ident),+ $(,)?) => {
+        $(let $v = $v.clone();)+
     };
 }

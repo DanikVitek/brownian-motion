@@ -1,11 +1,11 @@
 use std::{
-    iter::{once, repeat, repeat_with},
-    sync::{mpsc, Arc, Mutex},
+    iter::{once, repeat},
+    sync::{mpsc, Arc, Barrier, Mutex},
     thread,
     time::Instant,
 };
 
-use brownian_motion::{spawn_scoped_event_handler, Args, Direction, Event};
+use brownian_motion::{reclone, spawn_scoped_event_handler, Args, Direction, Event};
 use rand::Rng;
 
 fn main() {
@@ -25,27 +25,26 @@ fn main() {
         (args, log_step_duration, simulation_duration)
     };
 
-    thread::scope(|s| {
-        let crystal: Arc<Mutex<Box<[usize]>>> = Arc::new(Mutex::new(
-            once(impurities.get())
-                .chain(repeat(0))
-                .take(cells.get())
-                .collect(),
-        ));
-        let (notify_senders, notify_receivers): (Vec<_>, Vec<_>) =
-            repeat_with(|| crossbeam::channel::bounded::<()>(0))
-                .take(impurities.get())
-                .unzip();
+    let crystal: Arc<Mutex<Box<[usize]>>> = Arc::new(Mutex::new(
+        once(impurities.get())
+            .chain(repeat(0))
+            .take(cells.get())
+            .collect(),
+    ));
+    let tick_barrier = Arc::new(Barrier::new(impurities.get()));
 
-        let (event_sender, event_receiver) = mpsc::channel::<Event>();
-        let (total_transitions_sender, total_transitions_receiver) = mpsc::channel::<u64>();
+    let (event_sender, event_receiver) = mpsc::channel::<Event>();
 
-        let event_handler = spawn_scoped_event_handler(s, event_receiver, total_transitions_sender);
+    let log_thread = thread::spawn({
+        reclone!(crystal, event_sender);
 
-        s.spawn({
-            let crystal = crystal.clone();
-            let event_sender = event_sender.clone();
-            move || {
+        move || {
+            thread::scope(|s| {
+                let (total_transitions_sender, total_transitions_receiver) =
+                    mpsc::sync_channel::<u64>(0);
+                let event_handler =
+                    spawn_scoped_event_handler(s, event_receiver, total_transitions_sender);
+
                 let start = Instant::now();
                 event_sender.send(Event::AskForTotalTransitions).unwrap();
                 print_step(
@@ -55,7 +54,6 @@ fn main() {
                 );
                 let mut discrete_step_start = start;
                 while start.elapsed() < simulation_duration {
-                    notify_senders.iter().for_each(|s| s.send(()).unwrap());
                     if discrete_step_start.elapsed() >= log_step_duration {
                         event_sender.send(Event::AskForTotalTransitions).unwrap();
                         print_step(
@@ -66,45 +64,48 @@ fn main() {
                         discrete_step_start = Instant::now();
                     }
                 }
-                drop(notify_senders);
-                drop(event_sender);
+                event_sender.send(Event::Quit).unwrap();
+
                 print_step(
                     &crystal.lock().unwrap(),
                     start,
                     event_handler.join().unwrap(),
                 );
-            }
-        });
-        for notifications in notify_receivers {
-            let crystal = crystal.clone();
-            let event_sender = event_sender.clone();
-            s.spawn(move || {
-                let mut rng = rand::thread_rng();
-                let mut i: usize = 0;
-                while notifications.recv().is_ok() {
-                    let dir = if rng.gen::<f64>() > transition_probability {
-                        Direction::Right
-                    } else {
-                        Direction::Left
-                    };
-                    if i == 0 && dir.is_left() || i == cells.get() - 1 && dir.is_right() {
-                        continue;
-                    }
-
-                    let next = dir.next(i, cells).unwrap();
-
-                    {
-                        let mut crystal = crystal.lock().unwrap();
-                        crystal[i] -= 1;
-                        crystal[next] += 1;
-                    }
-                    _ = event_sender.send(Event::ParticleMoved);
-
-                    i = next;
-                }
             });
         }
     });
+    for _ in 0..impurities.get() {
+        reclone!(tick_barrier, crystal, event_sender);
+        thread::spawn(move || {
+            let mut rng = rand::thread_rng();
+            let mut i: usize = 0;
+            loop {
+                tick_barrier.wait();
+
+                let dir = if rng.gen::<f64>() > transition_probability {
+                    Direction::Right
+                } else {
+                    Direction::Left
+                };
+                if i == 0 && dir.is_left() || i == cells.get() - 1 && dir.is_right() {
+                    continue;
+                }
+
+                let next = dir.next(i, cells).unwrap();
+
+                {
+                    let mut crystal = crystal.lock().unwrap();
+                    crystal[i] -= 1;
+                    crystal[next] += 1;
+                }
+                _ = event_sender.send(Event::ParticleMoved);
+
+                i = next;
+            }
+        });
+    }
+
+    log_thread.join().unwrap();
 }
 
 fn print_step(crystal: &[usize], start: Instant, total_transitions: u64) {
