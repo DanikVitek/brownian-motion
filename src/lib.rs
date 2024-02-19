@@ -1,4 +1,10 @@
-use std::{num::NonZeroUsize, ops::RangeInclusive, sync::mpsc, thread::{Scope, ScopedJoinHandle}};
+use std::{
+    num::NonZeroUsize,
+    ops::RangeInclusive,
+    sync::mpsc,
+    thread::{Scope, ScopedJoinHandle},
+    time::Duration,
+};
 
 use clap::{CommandFactory, Parser};
 
@@ -16,6 +22,12 @@ pub struct Args {
     /// Probability of a particle transitioning to the left cell instead of right cell at any given time step
     #[arg(short = 'p', long, default_value_t = 0.5)]
     pub transition_probability: f64,
+    /// Duration between logging the state of the "crystal"
+    #[arg(short = 's', long, default_value_t = 5.)]
+    log_step_duration: f64,
+    /// Duration of the simulation
+    #[arg(short = 't', long, default_value_t = 60.)]
+    simulation_duration: f64,
 }
 
 impl Args {
@@ -27,6 +39,14 @@ impl Args {
                 .exit();
         }
         args
+    }
+
+    pub fn log_step_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.log_step_duration)
+    }
+
+    pub fn simulation_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.simulation_duration)
     }
 }
 
@@ -83,4 +103,11 @@ pub fn spawn_scoped_event_handler<'scope>(
         }
         transitions
     })
+}
+
+#[macro_export]
+macro_rules! reclone {
+    ($v:ident) => {
+        let $v = $v.clone();
+    };
 }

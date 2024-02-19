@@ -2,18 +2,28 @@ use std::{
     iter::{once, repeat, repeat_with},
     sync::{mpsc, Arc},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use brownian_motion::{spawn_scoped_event_handler, Args, Direction, Event};
 use rand::Rng;
 
 fn main() {
-    let Args {
-        cells,
-        impurities,
-        transition_probability,
-    } = Args::parse();
+    let (
+        Args {
+            cells,
+            impurities,
+            transition_probability,
+            ..
+        },
+        log_step_duration,
+        simulation_duration,
+    ) = {
+        let args = Args::parse();
+        let log_step_duration = args.log_step_duration();
+        let simulation_duration = args.simulation_duration();
+        (args, log_step_duration, simulation_duration)
+    };
 
     thread::scope(|s| {
         let crystal: Arc<[usize]> = once(impurities.get())
@@ -38,9 +48,9 @@ fn main() {
                 events_sender.send(Event::AskForTotalTransitions).unwrap();
                 print_step(&crystal, start, total_transitions_receiver.recv().unwrap());
                 let mut discrete_step_start = start;
-                while start.elapsed() < Duration::from_secs(60) {
+                while start.elapsed() < simulation_duration {
                     notify_senders.iter().for_each(|s| s.send(()).unwrap());
-                    if discrete_step_start.elapsed() >= Duration::from_secs(5) {
+                    if discrete_step_start.elapsed() >= log_step_duration {
                         events_sender.send(Event::AskForTotalTransitions).unwrap();
                         print_step(&crystal, start, total_transitions_receiver.recv().unwrap());
                         discrete_step_start = Instant::now();

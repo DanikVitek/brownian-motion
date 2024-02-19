@@ -1,66 +1,74 @@
 use std::{
     iter::{once, repeat_with},
     sync::{
-        atomic::{self, AtomicUsize},
-        mpsc, Arc,
+        atomic::{self, AtomicBool, AtomicUsize},
+        mpsc, Barrier,
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use brownian_motion::{spawn_scoped_event_handler, Args, Direction, Event};
+use brownian_motion::{reclone, spawn_scoped_event_handler, Args, Direction, Event};
 use rand::Rng;
 
 fn main() {
-    let Args {
-        cells,
-        impurities,
-        transition_probability,
-    } = Args::parse();
+    let (
+        Args {
+            cells,
+            impurities,
+            transition_probability,
+            ..
+        },
+        log_step_duration,
+        simulation_duration,
+    ) = {
+        let args = Args::parse();
+        let log_step_duration = args.log_step_duration();
+        let simulation_duration = args.simulation_duration();
+        (args, log_step_duration, simulation_duration)
+    };
+
+    let quit = &AtomicBool::new(false);
+    let tick_barrier = &Barrier::new(impurities.get());
+    let crystal: &[AtomicUsize] = &once(AtomicUsize::new(impurities.get()))
+        .chain(repeat_with(|| AtomicUsize::new(0)))
+        .take(cells.get())
+        .collect::<Box<[_]>>();
 
     thread::scope(|s| {
-        let crystal: Arc<[AtomicUsize]> = once(AtomicUsize::new(impurities.get()))
-            .chain(repeat_with(|| AtomicUsize::new(0)))
-            .take(cells.get())
-            .collect();
-        let (notify_senders, notify_receivers): (Vec<_>, Vec<_>) =
-            repeat_with(|| crossbeam::channel::bounded::<()>(0))
-                .take(impurities.get())
-                .unzip();
-
         let (event_sender, event_receiver) = mpsc::channel::<Event>();
         let (total_transitions_sender, total_transitions_receiver) = mpsc::channel::<u64>();
 
         let event_handler = spawn_scoped_event_handler(s, event_receiver, total_transitions_sender);
 
         s.spawn({
-            let crystal = crystal.clone();
-            let events_sender = event_sender.clone();
+            reclone!(event_sender);
             move || {
                 let start = Instant::now();
-                events_sender.send(Event::AskForTotalTransitions).unwrap();
+                event_sender.send(Event::AskForTotalTransitions).unwrap();
                 print_step(&crystal, start, total_transitions_receiver.recv().unwrap());
                 let mut discrete_step_start = start;
-                while start.elapsed() < Duration::from_secs(60) {
-                    notify_senders.iter().for_each(|s| s.send(()).unwrap());
-                    if discrete_step_start.elapsed() > Duration::from_secs(5) {
-                        events_sender.send(Event::AskForTotalTransitions).unwrap();
+                while start.elapsed() < simulation_duration {
+                    if discrete_step_start.elapsed() >= log_step_duration {
+                        event_sender.send(Event::AskForTotalTransitions).unwrap();
                         print_step(&crystal, start, total_transitions_receiver.recv().unwrap());
                         discrete_step_start = Instant::now();
                     }
                 }
-                drop(notify_senders);
-                drop(events_sender);
+                quit.store(true, atomic::Ordering::Relaxed);
+                drop(event_sender);
                 print_step(&crystal, start, event_handler.join().unwrap());
             }
         });
-        for notifications in notify_receivers {
-            let crystal = crystal.clone();
-            let events_sender = event_sender.clone();
+
+        for _ in 0..impurities.get() {
+            reclone!(event_sender);
             s.spawn(move || {
                 let mut rng = rand::thread_rng();
                 let mut i: usize = 0;
-                while notifications.recv().is_ok() {
+                while !quit.load(atomic::Ordering::Relaxed) {
+                    tick_barrier.wait();
+
                     let dir = if rng.gen::<f64>() > transition_probability {
                         Direction::Right
                     } else {
@@ -72,10 +80,12 @@ fn main() {
 
                     let next = dir.next(i, cells).unwrap();
 
-                    crystal[i].fetch_sub(1, atomic::Ordering::SeqCst);
-                    crystal[next].fetch_add(1, atomic::Ordering::SeqCst);
+                    crystal[i].fetch_sub(1, atomic::Ordering::Relaxed);
+                    crystal[next].fetch_add(1, atomic::Ordering::Relaxed);
 
-                    _ = events_sender.send(Event::ParticleMoved);
+                    if event_sender.send(Event::ParticleMoved).is_err() {
+                        break;
+                    }
 
                     i = next;
                 }
@@ -91,7 +101,7 @@ fn print_step(crystal: &[AtomicUsize], start: Instant, total_transitions: u64) {
         crystal,
         crystal
             .iter()
-            .map(|c| c.load(atomic::Ordering::Acquire))
+            .map(|c| c.load(atomic::Ordering::Relaxed))
             .sum::<usize>(),
         total_transitions,
     );
