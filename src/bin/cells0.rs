@@ -75,6 +75,9 @@ fn main() {
                     Direction::Left
                 };
                 if i == 0 && dir.is_left() || i == cells.get() - 1 && dir.is_right() {
+                    if event_sender.send(Event::ParticleMoved).is_err() {
+                        break;
+                    }
                     continue;
                 }
 

@@ -88,6 +88,9 @@ fn main() {
                     Direction::Left
                 };
                 if i == 0 && dir.is_left() || i == cells.get() - 1 && dir.is_right() {
+                    if event_sender.send(Event::ParticleMoved).is_err() {
+                        break;
+                    }
                     continue;
                 }
 
@@ -98,7 +101,9 @@ fn main() {
                     crystal[i] -= 1;
                     crystal[next] += 1;
                 }
-                _ = event_sender.send(Event::ParticleMoved);
+                if event_sender.send(Event::ParticleMoved).is_err() {
+                    break;
+                }
 
                 i = next;
             }
